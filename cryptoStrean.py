@@ -1,0 +1,62 @@
+import pandas as pd
+from binance.client import Client
+import asyncio
+from binance import AsyncClient, BinanceSocketManager
+from sqlalchemy import create_engine
+import datetime
+
+date = datetime.date.today()
+engine = create_engine("sqlite:///PriceList "+str(date)+".db")
+client = Client()
+info = client.get_exchange_info()
+symbols = [x['symbol'] for x in info['symbols']]
+exclude = ['UP', 'DOWN', 'BEAR', 'BULL']
+non_lev = [symbol for symbol in symbols if all(excludes not in symbol for excludes in exclude)]
+relevent = [symbol for symbol in non_lev if symbol.endswith('USDT')]
+multi = [i.lower() + '@trade' for i in relevent]
+
+
+
+def createframe(msg):
+
+    df = pd.DataFrame([msg['data']])
+    df = df.loc[:, ['s', 'E', 'p']]
+    df.columns = ['symbol', 'Time', 'Price']
+    df.Price = df.Price.astype(float)
+    df.Time = pd.to_datetime(df.Time, unit='ms')
+    return df
+
+
+async def main():
+    client = await AsyncClient.create()
+
+    bm = BinanceSocketManager(client)
+    ms = bm.multiplex_socket(multi)
+    async with ms as tscm:
+        while True:
+            res = await tscm.recv()
+            if res:
+                frame = createframe(res)
+                frame.to_sql(frame.symbol[0], engine, if_exists='append', index=False)
+
+    await client.close_connection()
+
+
+
+if __name__ == "__main__":
+    num_retry = 4
+    count = 0
+    logfile = open('log.txt', 'w+')
+    while(count < num_retry):
+        try:
+            loop = asyncio.get_event_loop()
+            loop.run_until_complete(main())
+        except Exception:
+            count += 1
+            logfile.write("Error Occurred retrying\n"+Exception)
+        finally:
+            if(count>=num_retry):
+                logfile.close()
+
+
+
